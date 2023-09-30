@@ -1,0 +1,8 @@
+# example toml file
+# currently this is hardcoded to be loaded from USER/.nostrpy/nostr_track.toml
+relays = 'wss://nostr-pub.wellorder.net,wss://nos.lol,wss://relay.nostr.band'
+#as-user = 'monty'
+clementine_ip = '192.168.0.30'
+clementine_auth = 12654
+user = 'monty' # using alias,can be nsec
+
