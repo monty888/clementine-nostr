@@ -1,0 +1,3 @@
+python_clementine_remote>=1.0.3
+toml>=0.10.2
+protobuf==3.20.3
