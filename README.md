@@ -4,12 +4,11 @@ status updates for nostr from clementine music player
 # install
 
 ```sh
-git clone --recurse-submodules https://github.com/monty888/clementine-nostr.git
+git clone https://github.com/monty888/clementine-nostr.git
 cd clementine-nostr  
 python3 -m venv venv   
 source venv/bin/activate   
-pip install -r requirements.txt   
-pip install ./monstr
+pip install -r requirements.txt
 ```
 
 # running
