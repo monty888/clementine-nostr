@@ -7,20 +7,22 @@ from toml import TomlDecodeError
 import os
 import argparse
 import signal
-import sys
+from getpass import getpass
 from clementineremote import ClementineRemote
 from monstr.event.event import Event
-from monstr.ident.alias import ProfileFileAlias
 from monstr.client.client import ClientPool
 from monstr.util import ConfigError
 from monstr.encrypt import Keys
+from monstr.ident.keystore import SQLiteKeyStore, NIP49KeyDataEncrypter
+from monstr.signing.signing import BasicKeySigner, SignerInterface
+from monstr.signing.nip46 import NIP46Signer
 
 # defaults
 WORK_DIR = f'{Path.home()}/.nostrpy/'
 # toml config file
 CONFIG_FILE = 'nostr_track.toml'
-# alias file
-ALIAS_FILE = f'{WORK_DIR}profiles.csv'
+# filename for key store
+KEY_STORE_DB_FILE = 'keystore.db'
 # default relays
 RELAYS = 'ws://localhost:8081'
 # to attach to clementine - remote must be enabled
@@ -88,7 +90,7 @@ def get_config_int(name, val):
         raise ConfigError(f'{name} in value is required received {val}')
 
 
-def get_config() -> dict:
+async def get_config() -> dict:
     # defaults if not otherwise give
     ret = {
         'relays': RELAYS,
@@ -96,6 +98,10 @@ def get_config() -> dict:
         'clementine_ip': CLEMENTINE_IP,
         'clementine_port': CLEMENTINE_PORT,
         'clementine_auth': CLEMENTINE_AUTH,
+        'keystore': {
+            'filename': WORK_DIR + KEY_STORE_DB_FILE,
+            'password': None
+        },
         'debug': False
     }
 
@@ -119,17 +125,32 @@ def get_config() -> dict:
     else:
         # try to turn user into keys we can use
         user = ret['user']
-        keys = Keys.get_key(user)
-        if keys is None:
-            # see if we're using alias
-            my_alias = ProfileFileAlias(ALIAS_FILE)
-            profile = my_alias.get_profile('monty')
-            if user:
-                keys = profile.keys
 
-        # at this point if we don't have keys or we have keys but not with private key we're done
-        if keys is None or keys.private_key_hex() is None:
-            raise ConfigError('bad keys or alias - require nsec or alias with private key')
+        # nip46 connection str
+        if user.lower().startswith('bunker://'):
+            ret['user_sign'] = NIP46Signer(user, auto_start=True)
+        # keys or alias to keys
+        else:
+            keys = Keys.get_key(user)
+            if keys is None:
+                # see if we're using alias
+                async def get_password() -> str:
+                    nonlocal ret
+                    password = ret['keystore']['password']
+                    if password is None:
+                        password = getpass('keystore key: ')
+                    return password
+                my_enc = NIP49KeyDataEncrypter(get_password=get_password)
+                my_store = SQLiteKeyStore(file_name=ret['keystore']['filename'],
+                                          encrypter=my_enc)
+
+                keys = await my_store.get(user)
+
+            # at this point if we don't have keys or we have keys but not with private key we're done
+            if keys is None or keys.private_key_hex() is None:
+                raise ConfigError('bad keys or alias - require nsec or alias with private key')
+            else:
+                ret['user_sign'] = BasicKeySigner(keys)
 
     if ret['clementine_auth'] is not None:
         ret['clementine_auth'] = get_config_int('clementine_auth', ret['clementine_auth'])
@@ -140,7 +161,8 @@ def get_config() -> dict:
     return ret
 
 
-async def watch_tracks(args):
+async def watch_tracks():
+    args = await get_config()
     last_title = None
 
     # extract vals from args
@@ -149,9 +171,8 @@ async def watch_tracks(args):
     clementine_port = args['clementine_port']
     clementine_auth = args['clementine_auth']
 
-    my_alias = ProfileFileAlias(ALIAS_FILE)
-
-    user = my_alias.get_profile('monty')
+    # a signer probably basic but could be n46
+    my_sign: SignerInterface = args['user_sign']
 
     # create and start nostr client pool
     client = ClientPool(clients=relays)
@@ -187,7 +208,7 @@ async def watch_tracks(args):
                 status_event = Event(
                     kind=30315,
                     content=status_content,
-                    pub_key=user.public_key,
+                    pub_key=await my_sign.get_public_key(),
                     tags=[
                         ['d', 'music'],
                         ['expiration', str(expire_time)]
@@ -197,7 +218,7 @@ async def watch_tracks(args):
                 print(status_event.content)
 
                 try:
-                    status_event.sign(user.private_key)
+                    await my_sign.sign_event(status_event)
                     client.publish(status_event)
                 except Exception as e:
                     print(e)
@@ -207,7 +228,7 @@ async def watch_tracks(args):
         else:
             print(clementine.state)
 
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.1)
 
     client.end()
     clementine.disconnect()
@@ -216,7 +237,7 @@ async def watch_tracks(args):
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.ERROR)
     try:
-        asyncio.run(watch_tracks(get_config()))
+        asyncio.run(watch_tracks())
     except ConfigError as ce:
         print(ce)
 
